@@ -72,6 +72,10 @@ export interface HttpServerOptions {
    *  privileged standalone handshake may arrive under -- e.g. a reverse proxy's
    *  public name. See wsAuth.privilegedHostnames. */
   allowedHosts?: readonly string[];
+  /** Hook providers superseded by an explicitly selected authoritative source. */
+  inactiveHookProviderIds?: ReadonlySet<string>;
+  /** Do not restore persisted external agents when a different source owns the office state. */
+  suppressExternalAgentRestore?: boolean;
 }
 
 /** Result of createHttpServer(). */
@@ -295,6 +299,8 @@ function registerWebSocketRoute(
           packageRoot: options.packageRoot,
           privileged,
           ptyManager: options.ptyManager,
+          inactiveHookProviderIds: options.inactiveHookProviderIds,
+          suppressExternalAgentRestore: options.suppressExternalAgentRestore,
         });
       } catch {
         // Malformed JSON, ignore

@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import { createServer } from 'http';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
@@ -7,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CliArgsError, parseArgs } from '../src/cli.js';
 import { CLAUDE_HOOK_EVENTS } from '../src/providers/hook/claude/constants.js';
+import { loadT3Credential, saveT3Credential } from '../src/providers/t3/t3CredentialStore.js';
 
 const CLI_BUNDLE = path.join(__dirname, '../../dist/cli.js');
 const CLI_START_TIMEOUT_MS = 10_000;
@@ -152,6 +154,11 @@ describe('parseArgs', () => {
     expect(parseArgs([]).rotateToken).toBe(false);
     expect(parseArgs(['--rotate-token']).rotateToken).toBe(true);
   });
+
+  it('accepts a T3 server URL without accepting secrets on the command line', () => {
+    expect(parseArgs(['--t3-url', 'https://t3.example']).t3Url).toBe('https://t3.example');
+    expect(() => parseArgs(['--t3-url'])).toThrow(/Missing value for --t3-url/);
+  });
 });
 
 // The TTY consent prompt is gone: first-run consent is asked in the app, as
@@ -203,14 +210,24 @@ describe('dist/cli.js entry-point guard', () => {
     tmpHome: string,
     body: (ctx: { output: () => string; port: number }) => Promise<void>,
     host = '127.0.0.1',
+    options: { args?: string[]; env?: NodeJS.ProcessEnv } = {},
   ): Promise<void> {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-workspace-'));
     const port = await getFreePort();
-    const child = spawn(process.execPath, [CLI_BUNDLE, '--port', port.toString(), '--host', host], {
-      cwd: workspaceDir,
-      env: { ...process.env, HOME: tmpHome, USERPROFILE: tmpHome },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const child = spawn(
+      process.execPath,
+      [CLI_BUNDLE, '--port', port.toString(), '--host', host, ...(options.args ?? [])],
+      {
+        cwd: workspaceDir,
+        env: {
+          ...process.env,
+          ...options.env,
+          HOME: tmpHome,
+          USERPROFILE: tmpHome,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
     let output = '';
     child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
@@ -272,6 +289,135 @@ describe('dist/cli.js entry-point guard', () => {
       expect(response.status).toBe(200);
       expect(await response.text()).toContain('<div id="root">');
     });
+  });
+
+  itBuilt('redeems a T3 pairing URL for read-only observation', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-t3-pairing-'));
+    let exchangeBody: URLSearchParams | undefined;
+    let shellAuthorization: string | undefined;
+    let shellProtocol: string | undefined;
+    const t3Server = createServer(async (request, response) => {
+      if (request.method === 'POST' && request.url === '/oauth/token') {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        exchangeBody = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+        response.setHeader('content-type', 'application/json');
+        response.end(
+          JSON.stringify({
+            access_token: 'read-only-test-token',
+            token_type: 'Bearer',
+            scope: 'orchestration:read',
+            expires_in: 3600,
+          }),
+        );
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/api/orchestration/shell') {
+        shellAuthorization = request.headers.authorization;
+        shellProtocol = request.headers['x-t3-orchestration-protocol']?.toString();
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ projects: [], threads: [] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      t3Server.once('error', reject);
+      t3Server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = t3Server.address();
+    if (!address || typeof address === 'string') throw new Error('T3 test server did not bind.');
+    const t3Url = `http://127.0.0.1:${address.port}`;
+
+    try {
+      await runCliServer(
+        tmpHome,
+        async ({ output }) => {
+          await waitForCondition(() => Boolean(exchangeBody && shellAuthorization));
+          expect(exchangeBody?.get('subject_token')).toBe('pairing-test-token');
+          expect(exchangeBody?.get('scope')).toBe('orchestration:read');
+          expect(shellAuthorization).toBe('Bearer read-only-test-token');
+          expect(shellProtocol).toBe('2');
+          expect(output()).not.toContain('pairing-test-token');
+          expect(output()).not.toContain('read-only-test-token');
+          expect(loadT3Credential(t3Url, tmpHome)).toMatchObject({
+            baseUrl: t3Url,
+            token: 'read-only-test-token',
+          });
+          const saved = fs.readFileSync(
+            path.join(tmpHome, '.pixel-agents', 't3', 'connection.json'),
+            'utf8',
+          );
+          expect(saved).not.toContain('pairing-test-token');
+        },
+        '127.0.0.1',
+        {
+          args: ['--no-terminal'],
+          env: {
+            PIXEL_AGENTS_T3_URL: t3Url,
+            PIXEL_AGENTS_T3_PAIRING_CODE: 'pairing-test-token',
+          },
+        },
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        t3Server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  itBuilt('reuses an unexpired saved T3 bearer without exchanging another code', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cli-t3-saved-'));
+    let exchangeRequests = 0;
+    let shellAuthorization: string | undefined;
+    let shellProtocol: string | undefined;
+    const t3Server = createServer(async (request, response) => {
+      if (request.method === 'POST' && request.url === '/oauth/token') {
+        exchangeRequests++;
+        response.statusCode = 400;
+        response.end();
+        return;
+      }
+      if (request.method === 'GET' && request.url === '/api/orchestration/shell') {
+        shellAuthorization = request.headers.authorization;
+        shellProtocol = request.headers['x-t3-orchestration-protocol']?.toString();
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify({ projects: [], threads: [] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      t3Server.once('error', reject);
+      t3Server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = t3Server.address();
+    if (!address || typeof address === 'string') throw new Error('T3 test server did not bind.');
+    const t3Url = `http://127.0.0.1:${address.port}`;
+    saveT3Credential(
+      { baseUrl: t3Url, token: 'saved-read-token', expiresAt: Date.now() + 60_000 },
+      tmpHome,
+    );
+
+    try {
+      await runCliServer(
+        tmpHome,
+        async () => {
+          await waitForCondition(() => Boolean(shellAuthorization));
+          expect(exchangeRequests).toBe(0);
+          expect(shellAuthorization).toBe('Bearer saved-read-token');
+          expect(shellProtocol).toBe('2');
+        },
+        '127.0.0.1',
+        { args: ['--no-terminal', '--t3-url', t3Url] },
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        t3Server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   // `--host 0.0.0.0` is a BIND target, not an address to browse to: printing

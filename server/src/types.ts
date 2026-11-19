@@ -9,6 +9,8 @@ export interface AgentState {
   terminalRef?: vscode.Terminal;
   /** Whether this agent was detected from an external source (VS Code extension panel, etc.) */
   isExternal: boolean;
+  /** Source-managed agents are recreated from their authoritative source and are never persisted. */
+  transient?: boolean;
   projectDir: string;
   jsonlFile: string;
   fileOffset: number;
@@ -22,6 +24,8 @@ export interface AgentState {
    *  the completion queue-operation), see BackgroundSpawns. */
   backgroundSpawns: BackgroundSpawns;
   isWaiting: boolean;
+  /** Whether the latest inactive state is specifically waiting for user input. */
+  awaitingInput?: boolean;
   /** The office was last told this agent is active (agentStatus 'active', not
    *  yet 'waiting'), so a connecting client is told too: a turn between two
    *  tools has no live tool to say so. Unset for an agent with no turn seen. */

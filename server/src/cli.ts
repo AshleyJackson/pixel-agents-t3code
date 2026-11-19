@@ -40,6 +40,9 @@ import {
   hookProviderById,
   hookProviders,
 } from './providers/index.js';
+import { T3ActivityBridge } from './providers/t3/t3ActivityBridge.js';
+import { exchangeT3PairingCode, exchangeT3PairingUrl } from './providers/t3/t3Auth.js';
+import { loadT3Credential, saveT3Credential } from './providers/t3/t3CredentialStore.js';
 import { PixelAgentsServer } from './server.js';
 import {
   defaultPtyHostSocket,
@@ -73,6 +76,8 @@ export interface CliArgs {
   ptyHost: boolean;
   /** --pty-host-socket: where that process listens (default under ~/.pixel-agents). */
   ptyHostSocket?: string;
+  /** --t3-url: one T3 Code server to observe (token is supplied via environment). */
+  t3Url?: string;
 }
 
 /** Thrown by parseArgs on an invalid --port. Kept separate from process.exit so
@@ -131,6 +136,12 @@ export function parseArgs(argv: string[]): CliArgs {
       args.ptyHost = true;
       args.ptyHostSocket = path.resolve(raw);
       i++;
+    } else if (argv[i] === '--t3-url') {
+      const raw = argv[i + 1];
+      if (!raw)
+        throw new CliArgsError('Missing value for --t3-url: expected a T3 Code server URL.');
+      args.t3Url = raw;
+      i++;
     } else if (argv[i] === '--help') {
       console.log(`Usage: pixel-agents [options]
 
@@ -149,6 +160,10 @@ Options:
                         (e.g. to update it) leaves agents running
   --pty-host-socket <path>
                         That process's socket (implies --pty-host)
+  --t3-url <url>        Observe one T3 Code environment (requires
+                        PIXEL_AGENTS_T3_TOKEN or a saved read-only token)
+                        Pair once with PIXEL_AGENTS_T3_PAIRING_CODE, or use
+                        PIXEL_AGENTS_T3_PAIRING_URL for a T3 /pair link
   --help                Show this help message`);
       process.exit(0);
     }
@@ -275,6 +290,93 @@ async function main(): Promise<void> {
     console.error(`[Pixel Agents] ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+  let t3Url = args.t3Url ?? process.env['PIXEL_AGENTS_T3_URL'];
+  let t3Token = process.env['PIXEL_AGENTS_T3_TOKEN'];
+  const t3PairingUrl = process.env['PIXEL_AGENTS_T3_PAIRING_URL'];
+  const t3PairingCode = process.env['PIXEL_AGENTS_T3_PAIRING_CODE'];
+  // These secrets are needed only by the observer and must never be inherited
+  // by a child process or terminal.
+  delete process.env['PIXEL_AGENTS_T3_TOKEN'];
+  delete process.env['PIXEL_AGENTS_T3_PAIRING_URL'];
+  delete process.env['PIXEL_AGENTS_T3_PAIRING_CODE'];
+
+  if (t3PairingUrl && t3PairingCode) {
+    console.error(
+      '[Pixel Agents] Set either PIXEL_AGENTS_T3_PAIRING_URL or PIXEL_AGENTS_T3_PAIRING_CODE, not both.',
+    );
+    process.exit(1);
+  }
+  if (t3PairingUrl && (t3Url || t3Token)) {
+    console.error(
+      '[Pixel Agents] Use PIXEL_AGENTS_T3_PAIRING_URL on its own, or configure a T3 URL and bearer token separately.',
+    );
+    process.exit(1);
+  }
+  if (t3PairingCode && (!t3Url || t3Token)) {
+    console.error(
+      '[Pixel Agents] PIXEL_AGENTS_T3_PAIRING_CODE requires --t3-url or PIXEL_AGENTS_T3_URL and cannot be combined with a bearer token.',
+    );
+    process.exit(1);
+  }
+  if ((t3PairingUrl || t3PairingCode) && args.terminal) {
+    console.error('[Pixel Agents] T3 observation is read-only; pass --no-terminal.');
+    process.exit(1);
+  }
+  if (!t3PairingUrl && !t3PairingCode && t3Url && !t3Token) {
+    t3Token = loadT3Credential(t3Url)?.token;
+  }
+  if (!t3PairingUrl && !t3PairingCode && t3Url && !t3Token) {
+    console.error(
+      '[Pixel Agents] T3 observation needs a saved read-only token or PIXEL_AGENTS_T3_TOKEN.',
+    );
+    process.exit(1);
+  }
+  if (!t3PairingUrl && !t3Url && t3Token) {
+    console.error(
+      '[Pixel Agents] Set --t3-url or PIXEL_AGENTS_T3_URL to use PIXEL_AGENTS_T3_TOKEN.',
+    );
+    process.exit(1);
+  }
+  if (t3Url && args.terminal) {
+    console.error('[Pixel Agents] T3 observation is read-only; pass --no-terminal.');
+    process.exit(1);
+  }
+  if (t3PairingUrl) {
+    try {
+      const connection = await exchangeT3PairingUrl(t3PairingUrl);
+      t3Url = connection.baseUrl;
+      t3Token = connection.token;
+      try {
+        saveT3Credential(connection);
+        console.log('[Pixel Agents] Saved the read-only T3 credential in the user profile.');
+      } catch {
+        console.warn(
+          '[Pixel Agents] Could not save the T3 credential; it will only be available for this run.',
+        );
+      }
+    } catch (err) {
+      console.error(`[Pixel Agents] ${err instanceof Error ? err.message : 'T3 pairing failed.'}`);
+      process.exit(1);
+    }
+  }
+  if (t3PairingCode && t3Url) {
+    try {
+      const connection = await exchangeT3PairingCode(t3Url, t3PairingCode);
+      t3Url = connection.baseUrl;
+      t3Token = connection.token;
+      try {
+        saveT3Credential(connection);
+        console.log('[Pixel Agents] Saved the read-only T3 credential in the user profile.');
+      } catch {
+        console.warn(
+          '[Pixel Agents] Could not save the T3 credential; it will only be available for this run.',
+        );
+      }
+    } catch (err) {
+      console.error(`[Pixel Agents] ${err instanceof Error ? err.message : 'T3 pairing failed.'}`);
+      process.exit(1);
+    }
+  }
 
   // dist/ contains both the CLI bundle and the assets/ + webview/ directories
   const distRoot = __dirname;
@@ -321,21 +423,31 @@ async function main(): Promise<void> {
   try {
     // Create runtime first (before server.start, so we can pass it in)
     const runtime = new AgentRuntime(store, claudeProvider);
-
+    const t3Bridge = t3Url
+      ? new T3ActivityBridge({
+          baseUrl: t3Url,
+          token: t3Token!,
+          store,
+          runtime,
+        })
+      : undefined;
     // Agents whose terminals outlived the last server (--pty-host): back in
     // the office before any browser connects.
-    const reattached = reattachTerminalAgents({
-      store,
-      runtime,
-      ptyManager,
-      provider: claudeProvider,
-    });
+    const reattached = t3Bridge
+      ? []
+      : reattachTerminalAgents({
+          store,
+          runtime,
+          ptyManager,
+          provider: claudeProvider,
+        });
     if (reattached.length > 0) {
       console.log(`[Pixel Agents] Reattached ${reattached.length} running agent(s)`);
     }
 
     // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents
     server.onHookEvent((providerId, event) => {
+      if (t3Bridge) return;
       runtime.handleHookEvent(providerId, event);
     });
 
@@ -428,8 +540,12 @@ async function main(): Promise<void> {
       packageRoot,
       allowedHosts: args.allowedHosts,
       rotateToken: args.rotateToken,
+      inactiveHookProviderIds: t3Bridge ? new Set([claudeProvider.id]) : undefined,
+      suppressExternalAgentRestore: t3Bridge !== undefined,
+      observerId: t3Bridge?.observerId,
     });
     currentConfig = { port: config.port, token: config.token };
+    t3Bridge?.start();
     if (args.rotateToken) {
       console.log(
         '[Pixel Agents] Server token rotated: URLs carrying the old token no longer grant access. Open the new URL below on each device.',
@@ -445,12 +561,16 @@ async function main(): Promise<void> {
     // Sync runtime refs with persisted settings BEFORE first scan tick. The
     // runtime's single hooksEnabled ref follows the Claude provider until the
     // scanners grow per-provider awareness alongside the Settings UI.
-    runtime.hooksEnabled.current = getHooksEnabled(claudeProvider.id);
+    runtime.hooksEnabled.current = t3Bridge ? false : getHooksEnabled(claudeProvider.id);
     runtime.watchAllSessions.current = adapter.getSetting('pixel-agents.watchAllSessions', false);
 
     // Install hooks on startup if the persisted setting says so — gated on the
     // one-time consent to modify ~/.claude/settings.json.
-    if (runtime.hooksEnabled.current) {
+    if (t3Bridge) {
+      console.log(
+        '[Pixel Agents] T3 Code is authoritative; Claude hooks and transcript discovery are suppressed.',
+      );
+    } else if (runtime.hooksEnabled.current) {
       let consent = getHooksConsent(claudeProvider.id) === 'granted';
       if (!consent && (await claudeProvider.areHooksInstalled())) {
         // Our hooks are already installed and already firing — a pre-consent
@@ -485,14 +605,16 @@ async function main(): Promise<void> {
     }
 
     // Start scanning for external sessions (Claude running in user's terminal)
-    const cwd = process.cwd();
-    const dirs = claudeProvider.getSessionDirs?.(cwd);
-    if (dirs && dirs[0]) {
-      const projectDir = dirs[0];
-      console.log(`[Pixel Agents] Scanning project dir: ${projectDir}`);
-      runtime.startProjectScan(projectDir);
-      runtime.startExternalScanning(projectDir);
-      runtime.startStaleCheck();
+    if (!t3Bridge) {
+      const cwd = process.cwd();
+      const dirs = claudeProvider.getSessionDirs?.(cwd);
+      if (dirs && dirs[0]) {
+        const projectDir = dirs[0];
+        console.log(`[Pixel Agents] Scanning project dir: ${projectDir}`);
+        runtime.startProjectScan(projectDir);
+        runtime.startExternalScanning(projectDir);
+        runtime.startStaleCheck();
+      }
     }
 
     // The URL the operator opens has to be REACHABLE (a wildcard bind address
@@ -514,6 +636,7 @@ async function main(): Promise<void> {
       if (shuttingDown) return;
       shuttingDown = true;
       console.log('\nShutting down...');
+      t3Bridge?.stop();
       // In process: kill child terminals and wait for them (each exit closes
       // its agent): exiting now would cancel the SIGKILL escalation and leave
       // a child that ignores SIGHUP orphaned on a dead server. With the PTY

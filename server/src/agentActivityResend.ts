@@ -76,6 +76,7 @@ export function resendAgentActivity(
         type: 'agentStatus',
         id,
         status: 'waiting',
+        awaitingInput: agent.awaitingInput || undefined,
       });
     } else if (agent.turnActive) {
       send({ type: 'agentStatus', id, status: 'active' });

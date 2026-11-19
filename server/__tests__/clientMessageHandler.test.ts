@@ -1,7 +1,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const testHome = vi.hoisted(() => ({ path: undefined as string | undefined }));
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: () => testHome.path ?? actual.homedir() };
+});
 
 import { DEFAULT_CHARACTER_PROFILES } from '../../core/src/defaultCharacterProfiles.js';
 import { AgentRuntime } from '../src/agentRuntime.js';
@@ -77,6 +83,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-test-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
 
@@ -92,6 +99,7 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    testHome.path = undefined;
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -185,6 +193,35 @@ describe('clientMessageHandler: areas + carpet wire ordering', () => {
       // even though the user just toggled the setting ON.
       const status = sent.find((m) => m.type === 'hooksStatus');
       expect(status).toEqual({ type: 'hooksStatus', providerId: 'claude', installed: false });
+    });
+
+    it('does not ask to install or restore Claude agents when another source is authoritative', async () => {
+      setHooksEnabled('claude', false);
+      const restoreExternalAgents = vi.fn();
+      ctx.runtime = {
+        watchAllSessions: { current: false },
+        hooksEnabled: { current: false },
+        restoreExternalAgents,
+      } as unknown as AgentRuntime;
+      ctx.inactiveHookProviderIds = new Set(['claude']);
+      ctx.suppressExternalAgentRestore = true;
+      ctx.onSetHooksEnabled = vi.fn();
+
+      handleClientMessage({ type: 'webviewReady' }, (m) => sent.push(m), ctx);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(sent.some((message) => message.type === 'hooksConsentRequest')).toBe(false);
+      expect(restoreExternalAgents).not.toHaveBeenCalled();
+
+      handleClientMessage(
+        { type: 'setHooksEnabled', providerId: 'claude', enabled: true },
+        (m) => sent.push(m),
+        ctx,
+      );
+      await settle();
+
+      expect(ctx.onSetHooksEnabled).not.toHaveBeenCalled();
+      expect(getHooksEnabled('claude')).toBe(false);
     });
   });
 
@@ -446,6 +483,7 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-seats-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
 
@@ -461,6 +499,7 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    testHome.path = undefined;
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -604,6 +643,7 @@ describe('clientMessageHandler: character profiles', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-profiles-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
     store = new AgentStateStore();
@@ -616,6 +656,7 @@ describe('clientMessageHandler: character profiles', () => {
   afterEach(() => {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    testHome.path = undefined;
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -905,6 +946,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-term-test-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
 
@@ -922,6 +964,7 @@ describe('clientMessageHandler: standalone terminal control plane', () => {
     } else {
       process.env.HOME = originalHome;
     }
+    testHome.path = undefined;
     runtime.dispose();
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
@@ -1415,6 +1458,7 @@ describe('clientMessageHandler: read-only (untokened) clients', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-readonly-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
     store = new AgentStateStore();
@@ -1424,6 +1468,7 @@ describe('clientMessageHandler: read-only (untokened) clients', () => {
 
   afterEach(() => {
     process.env.HOME = originalHome;
+    testHome.path = undefined;
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -1556,6 +1601,7 @@ describe('clientMessageHandler: card order', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-cardorder-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
     store = new AgentStateStore();
@@ -1568,6 +1614,7 @@ describe('clientMessageHandler: card order', () => {
 
   afterEach(() => {
     process.env.HOME = originalHome;
+    testHome.path = undefined;
     store.dispose();
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
@@ -1633,12 +1680,14 @@ describe('clientMessageHandler: roster recency', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pxl-cmh-recent-'));
+    testHome.path = tempHome;
     originalHome = process.env.HOME;
     process.env.HOME = tempHome;
   });
 
   afterEach(() => {
     process.env.HOME = originalHome;
+    testHome.path = undefined;
     fs.rmSync(tempHome, { recursive: true, force: true });
   });
 
