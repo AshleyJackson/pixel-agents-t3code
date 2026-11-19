@@ -270,4 +270,45 @@ describe('T3 activity bridge', () => {
       bridge.stop();
     }
   });
+
+  it('does not recreate a locally dismissed thread until it leaves the snapshot', async () => {
+    let currentThreads: unknown[] = [thread()];
+    let responseCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      responseCount++;
+      return new Response(JSON.stringify(snapshot(currentThreads)), { status: 200 });
+    });
+    const store = new AgentStateStore();
+    const runtime = {
+      unregisterAgent: vi.fn(),
+      removeAgent: vi.fn((id: number) => store.delete(id)),
+    } as unknown as AgentRuntime;
+    const bridge = new T3ActivityBridge({
+      baseUrl: 'http://127.0.0.1:3773',
+      token: 'read-token',
+      store,
+      runtime,
+      fetchImpl,
+      pollIntervalMs: 100,
+    });
+
+    bridge.start();
+    try {
+      await vi.waitFor(() => expect(store.size).toBe(1));
+      const dismissedId = [...store.keys()][0];
+      store.delete(dismissedId);
+
+      await vi.waitFor(() => expect(responseCount).toBeGreaterThanOrEqual(2));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(store.size).toBe(0);
+
+      currentThreads = [];
+      await vi.waitFor(() => expect(responseCount).toBeGreaterThanOrEqual(3));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      currentThreads = [thread()];
+      await vi.waitFor(() => expect(store.size).toBe(1));
+    } finally {
+      bridge.stop();
+    }
+  });
 });

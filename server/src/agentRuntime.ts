@@ -325,9 +325,12 @@ export class AgentRuntime {
     // Notify adapter before deleting from store
     this.lifecycleCallbacks.onAgentRemoved?.(id, agent);
 
-    // Remove from store (fires agentRemoved event) and persist
+    // Remove from store (fires agentRemoved event).
     this.store.delete(id);
-    this.store.persist();
+    // Source-managed agents are intentionally absent from the persisted
+    // runtime. Persisting their removal can overwrite saved agents that this
+    // server deliberately did not restore (for example in T3 observer mode).
+    if (!agent.transient) this.store.persist();
   }
 
   /** Stop an agent's watchers and timers, leaving it in the store. */

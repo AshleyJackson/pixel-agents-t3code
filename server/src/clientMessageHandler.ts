@@ -338,9 +338,12 @@ export function handleClientMessage(
             }
           }
         }
-        adapter?.saveSeats(seats);
+        const persistedSeats = Object.fromEntries(
+          Object.entries(seats).filter(([id]) => !store.get(Number(id))?.transient),
+        );
+        adapter?.saveSeats(persistedSeats);
         // Kept per session, so a resumed conversation comes back as it was.
-        recordConversationLooks(store, seats);
+        recordConversationLooks(store, persistedSeats);
       }
       break;
 

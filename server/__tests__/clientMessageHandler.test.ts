@@ -532,6 +532,27 @@ describe('clientMessageHandler: saveAgentSeats palette sync', () => {
     expect(store.get(2)?.repeat).toBe(0);
   });
 
+  it('does not persist seats for transient source-managed agents', () => {
+    store.set(1, createTestAgent({ id: 1, sessionId: 't3:env:thread', transient: true }));
+    store.set(2, createTestAgent({ id: 2, sessionId: 'saved-session' }));
+
+    handleClientMessage(
+      {
+        type: 'saveAgentSeats',
+        seats: {
+          '1': { palette: 1, repeat: 0, seatId: 't3-seat' },
+          '2': { palette: 2, repeat: 1, seatId: 'saved-seat' },
+        },
+      },
+      (m) => sent.push(m),
+      ctx,
+    );
+
+    expect(store.getAdapter()?.loadSeats()).toEqual({
+      '2': { palette: 2, repeat: 1, seatId: 'saved-seat' },
+    });
+  });
+
   it('drops an out-of-range palette', () => {
     store.set(1, createTestAgent({ id: 1 }));
 

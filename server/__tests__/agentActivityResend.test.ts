@@ -150,6 +150,8 @@ describe('resendAgentActivity', () => {
 
     expect(sent.find((m) => m.id === 1)?.permissionActive).toBe(true);
     expect(sent.find((m) => m.id === 2)?.permissionActive).toBeUndefined();
+    expect(sent).toContainEqual({ type: 'agentToolPermission', id: 1 });
+    expect(sent.filter((m) => m.type === 'agentToolPermission')).toHaveLength(1);
   });
 
   it('preserves waiting-for-input state on reconnect', () => {

@@ -12,10 +12,6 @@ const T3_CREDENTIAL_DIRECTORY = 't3';
 const T3_CREDENTIAL_FILE = 'connection.json';
 const T3_READ_SCOPE = 'orchestration:read';
 
-export interface StoredT3Credential extends T3ReadToken {
-  scope: typeof T3_READ_SCOPE;
-}
-
 export function t3CredentialFilePath(homeDir = os.homedir()): string {
   return path.join(homeDir, PIXEL_AGENTS_DIR, T3_CREDENTIAL_DIRECTORY, T3_CREDENTIAL_FILE);
 }
