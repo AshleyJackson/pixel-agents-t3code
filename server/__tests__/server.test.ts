@@ -250,6 +250,25 @@ describe('PixelAgentsServer', () => {
     server2.stop();
   });
 
+  it('keeps observer-owned office state separate from regular standalone servers', async () => {
+    const regular = await server.start({ embedded: false });
+    const observer = new PixelAgentsServer();
+    const observed = await observer.start({ embedded: false, observerId: 't3-env-1' });
+    expect(observed.port).not.toBe(regular.port);
+
+    const sameObserver = new PixelAgentsServer();
+    expect((await sameObserver.start({ embedded: false, observerId: 't3-env-1' })).port).toBe(
+      observed.port,
+    );
+    const differentObserver = new PixelAgentsServer();
+    expect(
+      (await differentObserver.start({ embedded: false, observerId: 't3-env-2' })).port,
+    ).not.toBe(observed.port);
+    differentObserver.stop();
+    sameObserver.stop();
+    observer.stop();
+  });
+
   it('records standalone access in the registry entry', async () => {
     await server.start({
       embedded: false,

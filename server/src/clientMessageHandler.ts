@@ -96,6 +96,10 @@ export interface ClientMessageContext {
   /** PTY terminals for standalone-launched agents. Absent in VS Code embedded
    *  mode, where the editor owns terminal lifecycle. */
   ptyManager?: TerminalSessions;
+  /** Providers superseded by an explicitly selected authoritative source. */
+  inactiveHookProviderIds?: ReadonlySet<string>;
+  /** Skip transcript-backed restore when another source owns office state. */
+  suppressExternalAgentRestore?: boolean;
 }
 
 // ── Setting key constants (mirror adapters/vscode/constants.ts) ──
@@ -510,6 +514,11 @@ async function applyHooksPreference(
   enabled: boolean,
 ): Promise<void> {
   try {
+    if (enabled && ctx.inactiveHookProviderIds?.has(provider.id)) {
+      const installed = await provider.areHooksInstalled().catch(() => false);
+      send({ type: 'hooksStatus', providerId: provider.id, installed });
+      return;
+    }
     await ctx.onSetHooksEnabled?.(provider.id, enabled);
     const installed = await provider.areHooksInstalled();
     if (installed === enabled) {
@@ -671,6 +680,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
       })
       .then((installed) => {
         send({ type: 'hooksStatus', providerId: provider.id, installed });
+        if (ctx.inactiveHookProviderIds?.has(provider.id)) return;
         // 4a-bis. First-run consent, asked in the app: this connect is the moment the user can be asked, so the ask
         // rides the handshake and consentGate owns every condition (VS Code calls the same function). The record is
         // re-read here rather than taken from startup — another tab may have answered while this one loaded.
@@ -718,7 +728,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   }
 
   // 5. Restore persisted external agents (standalone only; VS Code handles its own restore)
-  runtime?.restoreExternalAgents();
+  if (!ctx.suppressExternalAgentRestore) runtime?.restoreExternalAgents();
 
   // 6. Existing agents (either just restored, or from VS Code adapter if present)
   const agentIds: number[] = [];

@@ -23,6 +23,8 @@ export interface StandaloneAccess {
   host: string;
   /** Normalized, sorted `--allowed-host` names. */
   allowedHosts: string[];
+  /** Non-secret identity of an external observer that owns this office state. */
+  observerId?: string;
 }
 
 /** Complete per-server discovery record stored in the multi-server registry. */
@@ -48,6 +50,7 @@ export function sameStandaloneAccess(
   return (
     running.terminal === wanted.terminal &&
     running.host === wanted.host &&
+    running.observerId === wanted.observerId &&
     running.allowedHosts.length === wanted.allowedHosts.length &&
     running.allowedHosts.every((h, i) => h === wanted.allowedHosts[i])
   );
@@ -59,7 +62,8 @@ function isStandaloneAccess(value: unknown): value is StandaloneAccess {
     typeof value.terminal === 'boolean' &&
     typeof value.host === 'string' &&
     Array.isArray(value.allowedHosts) &&
-    value.allowedHosts.every((h) => typeof h === 'string')
+    value.allowedHosts.every((h) => typeof h === 'string') &&
+    (value.observerId === undefined || typeof value.observerId === 'string')
   );
 }
 

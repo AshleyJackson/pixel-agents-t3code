@@ -152,6 +152,15 @@ describe('resendAgentActivity', () => {
     expect(sent.find((m) => m.id === 2)?.permissionActive).toBeUndefined();
   });
 
+  it('preserves waiting-for-input state on reconnect', () => {
+    const store = new AgentStateStore();
+    store.set(1, createTestAgent({ id: 1, isWaiting: true, awaitingInput: true }));
+    const sent: Array<Record<string, unknown>> = [];
+    resendAgentActivity((msg) => sent.push(msg), store);
+
+    expect(sent).toEqual([{ type: 'agentStatus', id: 1, status: 'waiting', awaitingInput: true }]);
+  });
+
   it('handles background tools with flags and promoted skip logic', () => {
     const store = new AgentStateStore();
     // Lead with three background tools: unnamed, named spawn, and promoted

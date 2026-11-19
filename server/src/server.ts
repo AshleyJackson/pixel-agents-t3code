@@ -77,6 +77,12 @@ export class PixelAgentsServer {
     packageRoot?: string;
     /** Extra privileged Host names (standalone; see wsAuth.privilegedHostnames). */
     allowedHosts?: readonly string[];
+    /** Hook providers superseded by an explicitly selected authoritative source. */
+    inactiveHookProviderIds?: ReadonlySet<string>;
+    /** Do not restore persisted external agents when another source is authoritative. */
+    suppressExternalAgentRestore?: boolean;
+    /** Non-secret identity for an external observer that owns this office state. */
+    observerId?: string;
     /** Replace the persisted standalone token, revoking every URL that carried
      *  the old one. Refused while another standalone server is running: it
      *  would keep honouring the old token until it restarts. */
@@ -91,6 +97,7 @@ export class PixelAgentsServer {
           terminal: options?.ptyManager?.enabled ?? false,
           host,
           allowedHosts: normalizedAllowedHosts(options?.allowedHosts ?? []),
+          ...(options?.observerId ? { observerId: options.observerId } : {}),
         };
 
     // Capability-based reuse: an embedded (VS Code) caller only reuses another
@@ -147,6 +154,8 @@ export class PixelAgentsServer {
       ptyManager: options?.ptyManager,
       packageRoot: options?.packageRoot,
       allowedHosts: standalone?.allowedHosts,
+      inactiveHookProviderIds: options?.inactiveHookProviderIds,
+      suppressExternalAgentRestore: options?.suppressExternalAgentRestore,
     });
 
     this.app = app;
