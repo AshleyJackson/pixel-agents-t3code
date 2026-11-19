@@ -100,8 +100,17 @@ The printed URL carries a `?token=`. Without it you can watch the office in a so
 The standalone office can observe one T3 Code environment. Pass its server URL with `--t3-url` (or `PIXEL_AGENTS_T3_URL`) and provide a T3 bearer token with only the `orchestration:read` scope in `PIXEL_AGENTS_T3_TOKEN`. For first-time pairing, provide either the full one-time `/pair#token=…` link in `PIXEL_AGENTS_T3_PAIRING_URL`, or a server URL plus the short code in `PIXEL_AGENTS_T3_URL` and `PIXEL_AGENTS_T3_PAIRING_CODE`. Pixel Agents exchanges the pairing credential for an `orchestration:read`-only bearer and saves that token, its T3 URL, and expiry in `~/.pixel-agents/t3/connection.json` with owner-only file permissions where supported. Pairing credentials are one-use and expire quickly; the saved bearer expires according to T3's response and can be revoked earlier. Do not put pairing credentials or bearer tokens in command arguments, shell history, or logs. On later runs, pass the same `--t3-url` (or `PIXEL_AGENTS_T3_URL`) to reuse the saved token. An explicitly supplied `PIXEL_AGENTS_T3_TOKEN` is used for that run and is not saved. T3 observation requires `--no-terminal`: T3 is authoritative while enabled, so Claude hooks and transcript discovery are suppressed to prevent duplicate characters. Existing Claude hook settings are left untouched, but incoming hook events are ignored; settings still allow uninstalling hooks. T3 URLs must use HTTPS, except for HTTP on loopback.
 
 ```powershell
-$env:PIXEL_AGENTS_T3_TOKEN = "<read-only T3 bearer token>"
-npx pixel-agents --no-terminal --t3-url http://127.0.0.1:3773
+$secureToken = Read-Host -Prompt "T3 read-only bearer token" -AsSecureString
+$tokenPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+try {
+  $env:PIXEL_AGENTS_T3_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPointer)
+  npx pixel-agents --no-terminal --t3-url http://127.0.0.1:3773
+} finally {
+  Remove-Item Env:PIXEL_AGENTS_T3_TOKEN -ErrorAction SilentlyContinue
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenPointer)
+  $secureToken.Dispose()
+  Remove-Variable secureToken, tokenPointer
+}
 ```
 
 The bridge polls T3's read-only shell snapshot every few seconds. It shows T3 threads that have a live session, uses the project folder name, and reflects active turns, approval requests, user-input waits, and completed turns. The shell snapshot does not expose tool names, so active turns use a generic activity label. Prompts, transcripts, file contents, and thread titles are not read or sent to Pixel Agents. Archived, deleted, stopped, and failed sessions leave the office. Multi-environment aggregation and sub-agent detail are not included yet.

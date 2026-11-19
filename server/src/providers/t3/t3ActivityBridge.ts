@@ -190,6 +190,7 @@ export class T3ActivityBridge {
   readonly observerId: string;
   private readonly token: string;
   private readonly tracked = new Map<string, TrackedAgent>();
+  private readonly dismissed = new Set<string>();
   private running = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private connectionWarningShown = false;
@@ -232,6 +233,7 @@ export class T3ActivityBridge {
       this.options.runtime.removeAgent(agent.id);
     }
     this.tracked.clear();
+    this.dismissed.clear();
   }
 
   private async poll(): Promise<void> {
@@ -270,15 +272,29 @@ export class T3ActivityBridge {
   }
 
   private reconcile(threads: ObservedThread[]): void {
+    const observedIds = new Set(threads.map((thread) => thread.id));
+    for (const threadId of this.dismissed) {
+      if (!observedIds.has(threadId)) this.dismissed.delete(threadId);
+    }
+
     const seen = new Set<string>();
     for (const thread of threads) {
       seen.add(thread.id);
+      if (this.dismissed.has(thread.id)) continue;
+
       const tracked = this.tracked.get(thread.id);
       const agent = tracked ? this.options.store.get(tracked.id) : undefined;
       if (agent) {
         agent.projectDir = thread.projectDir;
         agent.directoryName = thread.directoryName;
         applyObservedStatus(this.options.store, agent.id, thread.status);
+        continue;
+      }
+      if (tracked) {
+        // The runtime removed this observed agent at the user's request. Keep
+        // the thread hidden until it leaves the source snapshot.
+        this.tracked.delete(thread.id);
+        this.dismissed.add(thread.id);
         continue;
       }
 

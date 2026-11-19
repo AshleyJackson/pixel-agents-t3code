@@ -81,6 +81,9 @@ export function resendAgentActivity(
     } else if (agent.turnActive) {
       send({ type: 'agentStatus', id, status: 'active' });
     }
+    if (agent.permissionSent) {
+      send({ type: 'agentToolPermission', id });
+    }
 
     // 5. Context usage
     if (agent.contextTokens > 0 || agent.contextReported) {

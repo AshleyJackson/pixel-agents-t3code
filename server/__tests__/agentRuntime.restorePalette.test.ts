@@ -202,6 +202,35 @@ describe('AgentRuntime -- restore preserves palette/repeat', () => {
     expect(restored?.repeat).toBe(3);
   });
 
+  it('does not overwrite saved agents when removing a transient source agent', () => {
+    const savedAgent: PersistedAgent = {
+      id: 9,
+      sessionId: 'saved-session',
+      terminalName: '',
+      isExternal: true,
+      jsonlFile: jsonlPath,
+      projectDir: tmpDir,
+    };
+    const adapter = createMockAdapter([savedAgent]);
+    const store = new AgentStateStore();
+    store.setAdapter(adapter);
+    runtime = new AgentRuntime(store, claudeProvider);
+    store.set(
+      1,
+      createTestAgent({
+        id: 1,
+        sessionId: 't3:environment:thread',
+        jsonlFile: '',
+        transient: true,
+      }),
+    );
+
+    runtime.removeAgent(1);
+
+    expect(adapter.saved).toEqual([]);
+    expect(adapter.loadAgents()).toEqual([savedAgent]);
+  });
+
   it('assigns a fresh palette when the persisted record has no palette', () => {
     const persisted: PersistedAgent[] = [
       {
